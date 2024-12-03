@@ -26,8 +26,15 @@
 #endif
 
 #include <app/server/CommissioningWindowManager.h>
-
-#include <app/server/Server.h>
+// Include Matter (CHIP) headers
+#include <app/server/OnboardingCodesUtil.h>
+#include <lib/support/logging/CHIPLogging.h>
+// #include <app/ClusterId.h>
+#include <app/AttributeAccessInterface.h>
+#include <protocols/bdx/BDXTransferServer.h>
+// #include <chip/DeviceLayer/ConfigurationManager.h>
+// #include <chip/DeviceLayer/PlatformManager.h>
+// #include <chip/DeviceLayer/ConnectivityManager.h>
 #include "sht30.h"
 #include "max17048_app.h"
 // #include "button.h"
@@ -414,6 +421,18 @@ extern "C" void app_main()
     node_t *node = node::create(&node_config, app_attribute_update_cb, app_identification_cb);
     ABORT_APP_ON_FAILURE(node != nullptr, ESP_LOGE(TAG, "Failed to create Matter node"));
     // add temperature sensor device
+    // Create the custom data storage delegate and cluster instance
+    CustomDataStorage::custom_Data customDataDelegate;
+    CustomDataStorage::Instance customDataInstance(1, customDataDelegate); // EndpointId = 1 for example
+
+    // Register the custom cluster in the Matter stack
+    
+    CHIP_ERROR chipErr = chip::Server::GetInstance().RegisterCluster(CustomDataStorage::Id, customDataInstance);
+    if (chipErr != CHIP_NO_ERROR) {
+        ESP_LOGE(TAG, "Failed to register custom cluster: %s", ErrorStr(chipErr));
+        return;
+    }
+    ESP_LOGI(TAG, "Custom cluster registered successfully");
     temperature_sensor::config_t temp_sensor_config;
     temp_sensor_ep = temperature_sensor::create(node, &temp_sensor_config, ENDPOINT_FLAG_NONE, NULL);
     ABORT_APP_ON_FAILURE(temp_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint"));
@@ -466,4 +485,23 @@ extern "C" void app_main()
     /* Matter start */
     err = esp_matter::start(app_event_cb);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
+    // Store and retrieve MeasurementData (e.g., on some event or periodically)
+    MeasurementData data = {50.5f, 25.0f, 85.0f}; // Example values for humidity, temperature, and battery SOC
+    err = customDataDelegate.store_data(data);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Measurement data stored successfully");
+    }
+
+    // Retrieve stored data and log it
+    MeasurementData retrievedData;
+    err = customDataDelegate.retrieve_data(retrievedData);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Retrieved Measurement Data: Humidity=%.2f, Temperature=%.2f, Battery SOC=%.2f",
+                 retrievedData.humidity, retrievedData.temperature, retrievedData.battery_soc);
+    } else {
+        ESP_LOGE(TAG, "Failed to retrieve measurement data");
+    }
+
+    // Commissioning management (this will be handled by existing logic)
+    open_commissioning_window_if_necessary();
 }
