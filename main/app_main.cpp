@@ -17,19 +17,25 @@
 
 #include <esp_matter.h>
 #include <esp_matter_ota.h>
-
+#include <app/util/basic-types.h>
 #include <common_macros.h>
 #include <app_priv.h>
+#include <app/AttributeAccessInterface.h>
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
 #include <platform/ESP32/OpenthreadLauncher.h>
 #endif
 
 #include <app/server/CommissioningWindowManager.h>
+
 #include <app/server/Server.h>
 #include "sht30.h"
-#include "button.h"
+#include "max17048_app.h"
+// #include "button.h"
 #include <driver/gpio.h>
 #include "button_gpio.h"
+
+#define NVS_NAMESPACE "Measured_Data"
+#define CLUSTER_ID  0x8003
 static const char *TAG = "app_main";
 
 using namespace esp_matter;
@@ -43,13 +49,168 @@ endpoint_t * humidity_sensor_ep;
 #define BUTTON_ACTIVE_LEVEL  0  
 #define BUTTON_POWER_SAVE_ENABLE true  
 
-extern esp_err_t button_gpio_set_intr(gpio_num_t gpio_num, gpio_int_type_t intr_type, gpio_isr_t isr_handler, void *args);
 button_gpio_config_t button_config = {
     .gpio_num = GPIO_NUM_2,
     .active_level = BUTTON_ACTIVE_LEVEL,
     // .enable_power_save = BUTTON_POWER_SAVE_ENABLE
 };
+// Custom Battery Level Cluster
+// namespace chip {
+// namespace app {
+// namespace Clusters {
 
+// class BatteryLevel : public chip::app::Clusters::ClusterBase
+// {
+// public:
+//     static constexpr chip::ClusterId Id = 0x1000; // Custom Cluster ID
+
+//     // Define Battery Level Attribute
+//     static constexpr chip::AttributeId BatteryLevelId = 0x0000;
+
+//     static void SetBatteryLevel(chip::app::EndpointId endpoint_id, float level)
+//     {
+//         esp_matter_attr_val_t batteryVal;
+//         batteryVal.type = ESP_MATTER_VAL_TYPE_FLOAT;
+//         batteryVal.val.f = level;
+//         SetAttribute(endpoint_id, BatteryLevelId, &batteryVal);
+//     }
+// };
+// Define a struct to hold the measurement data (humidity, temperature, and battery SOC)
+struct MeasurementData {
+    float humidity;
+    float temperature;
+    float battery_soc;
+};
+namespace chip {
+namespace app {
+namespace Clusters {
+namespace CustomDataStorage {
+
+// Custom Cluster definition
+class Delegate {
+public:
+    virtual ~Delegate() = default;
+
+    virtual esp_err_t store_data(const MeasurementData& data)  = 0;  // Store Data
+    virtual esp_err_t retrieve_data(MeasurementData& data) = 0;  // Retrieve Data
+};
+class custom_Data: public Delegate{
+    private:
+        int data_index = 0;
+    public:
+      // Function to store data in NVS
+    esp_err_t store_data(const MeasurementData& data) {
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+        if (err != ESP_OK) {
+            ESP_LOGE("store_data", "Failed to open NVS: %s", esp_err_to_name(err));
+            return err;
+        }
+
+        // Create a composite key using the index
+        std::string key = "measurement_" + std::to_string(data_index);
+
+        // Store the data (entire struct)
+        err = nvs_set_blob(nvs_handle, key.c_str(), &data, sizeof(MeasurementData));
+        if (err != ESP_OK) {
+            ESP_LOGE("store_data", "Failed to store data: %s", esp_err_to_name(err));
+            nvs_close(nvs_handle);
+            return err;
+        }
+
+        // Commit the data to NVS
+        err = nvs_commit(nvs_handle);
+        if (err != ESP_OK) {
+            ESP_LOGE("store_data", "Failed to commit data to NVS: %s", esp_err_to_name(err));
+            nvs_close(nvs_handle);
+            return err;
+        }
+
+        nvs_close(nvs_handle);
+        ESP_LOGI("store_data", "Data stored successfully at index %d", data_index);
+        return ESP_OK;
+    }
+
+    // Function to retrieve data from NVS
+    esp_err_t retrieve_data(MeasurementData& data) {
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+        if (err != ESP_OK) {
+            ESP_LOGE("retrieve_data", "Failed to open NVS: %s", esp_err_to_name(err));
+            return err;
+        }
+
+        // Create a composite key using the index
+        std::string key = "measurement_" + std::to_string(data_index);
+
+        // Retrieve the data (entire struct)
+        size_t required_size = sizeof(MeasurementData);
+        err = nvs_get_blob(nvs_handle, key.c_str(), &data, &required_size);
+        if (err != ESP_OK) {
+            ESP_LOGE("retrieve_data", "Failed to retrieve data: %s", esp_err_to_name(err));
+            nvs_close(nvs_handle);
+            return err;
+        }
+
+        nvs_close(nvs_handle);
+        ESP_LOGI("retrieve_data", "Data retrieved successfully for index %d", data_index);
+        return ESP_OK;
+    }
+};
+
+
+
+// Cluster implementation
+class Instance : public AttributeAccessInterface {
+
+public:
+    static constexpr ClusterId Id = CLUSTER_ID;
+    Instance(EndpointId aEndpointId, Delegate & aDelegate) :
+    AttributeAccessInterface(chip::Optional<EndpointId>(aEndpointId), Id), mDelegate(aDelegate) {}
+
+    // Instance(EndpointId aEndpointId, Delegate & aDelegate) :
+    //     AttributeAccessInterface(aEndpointId, Id), mDelegate(aDelegate) {}
+
+    CHIP_ERROR Init() { return CHIP_NO_ERROR; }
+    CHIP_ERROR Read(const ConcreteReadAttributePath & aPath, AttributeValueEncoder & aEncoder) override {
+        // Implement read logic based on the attribute path
+        return CHIP_NO_ERROR;
+    }
+
+private:
+    Delegate & mDelegate;
+};
+
+} // namespace CustomDataStorage
+} // namespace Clusters
+} // namespace app
+} // namespace chip
+
+
+// } // namespace Clusters
+// } // namespace app
+// } // namespace chip
+// static float read_battery_level()
+// {
+//     uint8_t battery_level_raw = 0;
+//     // Use your max17048 sensor driver to get the battery level
+//     // Assuming the battery level is returned as a percentage
+//     int err = max17048_get_battery_level(&battery_level_raw);
+//     if (err != ESP_OK) {
+//         ESP_LOGE(TAG, "Failed to read battery level from MAX17048");
+//         return 0.0f;
+//     }
+//     return static_cast<float>(battery_level_raw); // Assuming this is a percentage
+// }
+
+// static void update_battery_level(uint16_t endpoint_id)
+// {
+//     // Read the battery level from the MAX17048 sensor
+//     float battery_level = read_battery_level();
+    
+//     // Set the battery level attribute in the Matter BatteryLevel cluster
+//     BatteryLevel::SetBatteryLevel(endpoint_id, battery_level);
+// }
 // Application cluster specification, 7.18.2.11. Temperature
 // represents a temperature on the Celsius scale with a resolution of 0.01°C.
 // temp = (temperature in °C) x 100
@@ -68,6 +229,8 @@ static void temp_sensor_notification(uint16_t endpoint_id, float temp, void *use
         attribute::update(endpoint_id, TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id, &val);
     });
 }
+
+
 
 // Application cluster specification, 2.6.4.1. MeasuredValue Attribute
 // represents the humidity in percent.
@@ -260,6 +423,10 @@ extern "C" void app_main()
     humidity_sensor_ep = humidity_sensor::create(node, &humidity_sensor_config, ENDPOINT_FLAG_NONE, NULL);
     ABORT_APP_ON_FAILURE(humidity_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create humidity_sensor endpoint"));
 
+    // power_source_device::config_t power_source_config;
+    // endpoint_t * battery_sensor_ep = power_source_device::create(node, &power_source_config, ENDPOINT_FLAG_NONE, NULL);
+    // ABORT_APP_ON_FAILURE(battery_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create battery_sensor endpoint"));
+
     static sht30_sensor_config_t sht30_config = {
         .temperature = {
             .cb = temp_sensor_notification,
@@ -272,9 +439,15 @@ extern "C" void app_main()
     };
     err = sht30_sensor_init(&sht30_config);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to initialize temperature sensor driver"));
+
+    max17048_config_t max_config = {
+        .i2c_num = I2C_NUM_0,   // Use I2C port 0
+        .i2c_addr = MAX17048_DEFAULT_ADDR,  // Default I2C address
+    };
+
     button_gpio_init(&button_config);
     gpio_num_t btn = GPIO_NUM_2;
-    button_gpio_set_intr(btn, GPIO_INTR_POSEDGE, button_isr_handler, NULL);
+    // button_gpio_set_intr(btn, GPIO_INTR_POSEDGE, button_isr_handler, NULL);
 
     // endpoint::on_off_light::config_t endpoint_config;
     // endpoint_t *app_endpoint = endpoint::on_off_light::create(node, &endpoint_config, ENDPOINT_FLAG_NONE, NULL);
