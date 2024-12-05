@@ -14,7 +14,7 @@
 
 #include <lib/support/CodeUtils.h>
 
-#include <sht30.h>
+#include "sht30.h"
 
 static const char * TAG = "sht30";
 
@@ -33,7 +33,7 @@ typedef struct {
 
 static sht30_sensor_ctx_t s_ctx;
 
-static esp_err_t sht30_init_i2c()
+esp_err_t sht30_init_i2c()
 {
     i2c_config_t i2c_conf = {
         .mode = I2C_MODE_MASTER,
@@ -55,7 +55,7 @@ static esp_err_t sht30_init_i2c()
     return i2c_driver_install(I2C_MASTER_NUM, I2C_MODE_MASTER, 0, 0, 0);
 }
 
-static esp_err_t sht30_read(uint8_t *data, size_t size)
+esp_err_t sht30_read(uint8_t *data, size_t size)
 {
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
     i2c_master_start(cmd);
@@ -84,18 +84,18 @@ static esp_err_t sht30_read(uint8_t *data, size_t size)
 }
 
 // Temperature in degree Celsius
-static float sht30_get_temp(uint16_t raw_temp)
+float sht30_get_temp(uint16_t raw_temp)
 {
     return 175.0f * (static_cast<float>(raw_temp) / 65535.0f) - 45.0f;
 }
 
 // Humidity in percentage
-static float sht30_get_humidity(uint16_t raw_humidity)
+float sht30_get_humidity(uint16_t raw_humidity)
 {
     return 100.0f * (static_cast<float>(raw_humidity) / 65535.0f);
 }
 
-static esp_err_t sht30_get_read_temp_and_humidity(float & temp, float & humidity)
+esp_err_t sht30_get_read_temp_and_humidity(float & temp, float & humidity)
 {
     // foreach temperature and humidity: two bytes data, one byte for checksum
     uint8_t data[6] = {0};
@@ -114,7 +114,7 @@ static esp_err_t sht30_get_read_temp_and_humidity(float & temp, float & humidity
     return ESP_OK;
 }
 
-static void timer_cb_internal(void *arg)
+void timer_cb_internal(void *arg)
 {
     auto *ctx = (sht30_sensor_ctx_t *) arg;
     if (!(ctx && ctx->config)) {

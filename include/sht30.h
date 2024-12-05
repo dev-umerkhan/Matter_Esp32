@@ -53,3 +53,8 @@ typedef struct {
  *                     appropriate error code otherwise
  */
 esp_err_t sht30_sensor_init(sht30_sensor_config_t *config);
+esp_err_t sht30_get_read_temp_and_humidity(float & temp, float & humidity);
+float sht30_get_humidity(uint16_t raw_humidity);
+float sht30_get_temp(uint16_t raw_temp);
+esp_err_t sht30_read(uint8_t *data, size_t size);
+esp_err_t sht30_init_i2c();

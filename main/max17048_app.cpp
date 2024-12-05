@@ -17,7 +17,9 @@ static esp_err_t max17048_init_i2c(i2c_port_t i2c_num, uint8_t i2c_addr)
         .scl_io_num = 22,               /*!< SCL pin number */
         .sda_pullup_en = GPIO_PULLUP_ENABLE,
         .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = 100000,     /*!< I2C clock speed */
+        .master = {
+            .clk_speed = 100000,
+        },
     };
     esp_err_t err = i2c_param_config(i2c_num, &conf);
     if (err != ESP_OK) {
