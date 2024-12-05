@@ -15,29 +15,36 @@
 
 #include <esp_err.h>
 
-using sht30_sensor_cb_t = void (*)(uint16_t endpoint_id, float value, void *user_data);
+using sensor_cb_t = void (*)(uint16_t endpoint_id, float value, void *user_data);
 
 typedef struct {
     struct {
         // This callback functon will be called periodically to report the temperature.
-        sht30_sensor_cb_t cb = NULL;
+        sensor_cb_t cb = NULL;
         // endpoint_id associated with temperature sensor
         uint16_t endpoint_id;
     } temperature;
 
     struct {
         // This callback functon will be called periodically to report the humidity.
-        sht30_sensor_cb_t cb = NULL;
+        sensor_cb_t cb = NULL;
         // endpoint_id associated with humidity sensor
         uint16_t endpoint_id;
     } humidity;
+
+    struct {
+        // This callback functon will be called periodically to report the battery.
+        sensor_cb_t cb = NULL;
+        // endpoint_id associated with battery sensor
+        uint16_t endpoint_id;
+    } bat_level;
 
     // user data
     void *user_data = NULL;
 
     // polling interval in milliseconds, defaults to 5000 ms
-    uint32_t interval_ms = 5000;
-} sht30_sensor_config_t;
+    uint32_t interval_ms = 60000;
+} sensor_config_t;
 
 /**
  * @brief Initialize sensor driver. This function should be called only once
@@ -52,8 +59,8 @@ typedef struct {
  *                     ESP_ERR_INVALID_STATE if driver is already initialized
  *                     appropriate error code otherwise
  */
-esp_err_t sht30_sensor_init(sht30_sensor_config_t *config);
-esp_err_t sht30_get_read_temp_and_humidity(float & temp, float & humidity);
+esp_err_t sensor_init(sensor_config_t *config);
+esp_err_t read_sensor_data(int & temp, int & humidity, int & b_level);
 float sht30_get_humidity(uint16_t raw_humidity);
 float sht30_get_temp(uint16_t raw_temp);
 esp_err_t sht30_read(uint8_t *data, size_t size);

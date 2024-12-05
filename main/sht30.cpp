@@ -15,6 +15,7 @@
 #include <lib/support/CodeUtils.h>
 
 #include "sht30.h"
+#include "max17048_app.h"
 
 static const char * TAG = "sht30";
 
@@ -26,12 +27,12 @@ static const char * TAG = "sht30";
 #define SHT30_SENSOR_ADDR 0x44      /*!< I2C address of SHT30 sensor */
 
 typedef struct {
-    sht30_sensor_config_t *config;
+    sensor_config_t *config;
     esp_timer_handle_t timer;
     bool is_initialized = false;
-} sht30_sensor_ctx_t;
+} sensor_ctx_t;
 
-static sht30_sensor_ctx_t s_ctx;
+static sensor_ctx_t s_ctx;
 
 esp_err_t sht30_init_i2c()
 {
@@ -95,7 +96,7 @@ float sht30_get_humidity(uint16_t raw_humidity)
     return 100.0f * (static_cast<float>(raw_humidity) / 65535.0f);
 }
 
-esp_err_t sht30_get_read_temp_and_humidity(float & temp, float & humidity)
+esp_err_t read_sensor_data(int & temp, int & humidity, int & b_level)
 {
     // foreach temperature and humidity: two bytes data, one byte for checksum
     uint8_t data[6] = {0};
@@ -110,19 +111,20 @@ esp_err_t sht30_get_read_temp_and_humidity(float & temp, float & humidity)
 
     temp = sht30_get_temp(raw_temp);
     humidity = sht30_get_humidity(raw_humidity);
+    max17048_get_soc(&b_level);
 
     return ESP_OK;
 }
 
 void timer_cb_internal(void *arg)
 {
-    auto *ctx = (sht30_sensor_ctx_t *) arg;
+    auto *ctx = (sensor_ctx_t *) arg;
     if (!(ctx && ctx->config)) {
         return;
     }
 
-    float temp, humidity;
-    esp_err_t err = sht30_get_read_temp_and_humidity(temp, humidity);
+    int temp, humidity, b_level;
+    esp_err_t err = read_sensor_data(temp, humidity,b_level);
     if (err != ESP_OK) {
         return;
     }
@@ -132,9 +134,12 @@ void timer_cb_internal(void *arg)
     if (ctx->config->humidity.cb) {
         ctx->config->humidity.cb(ctx->config->humidity.endpoint_id, humidity, ctx->config->user_data);
     }
+    if (ctx->config->bat_level.cb) {
+        ctx->config->bat_level.cb(ctx->config->bat_level.endpoint_id, b_level, ctx->config->user_data);
+    }
 }
 
-esp_err_t sht30_sensor_init(sht30_sensor_config_t *config)
+esp_err_t sensor_init(sensor_config_t *config)
 {
     if (config == NULL) {
         return ESP_ERR_INVALID_ARG;

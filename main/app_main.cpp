@@ -13,11 +13,17 @@
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <vector>
 #if CONFIG_PM_ENABLE
 #include <esp_pm.h>
 #endif
 
 #include <esp_matter.h>
+#include <protocols/bdx/BdxMessages.h>
+// #include <lib/core/StringBuilderAdapters.h>
+#include <lib/support/BufferWriter.h>
+#include <lib/support/CHIPMem.h>
+#include <lib/support/CodeUtils.h>
 #include <esp_matter_ota.h>
 #include <app/util/basic-types.h>
 #include <common_macros.h>
@@ -34,13 +40,13 @@
 #include <app/AttributeAccessInterface.h>
 
 #include "sht30.h"
-#include "max17048_app.h"
 // #include "button.h"
 #include <driver/gpio.h>
 #include "button_gpio.h"
 
 #define CLUSTER_ID  0x8003
 static char nvs_index = 0;
+static constexpr int max_storage_size = 120; // Max size of historical data to store (can be adjusted)
 static bool nvs_full = false;
 static const char *TAG = "app_main";
 
@@ -85,10 +91,11 @@ button_gpio_config_t button_config = {
 // Define NVS namespace
 // Save sensor data to NVS
 typedef struct {
-    float temperature;
-    float humidity;
-    float battery_volt;
+    int temperature;
+    int humidity;
+    int battery_volt;
 } sensor_data_t;
+
 #define NVS_NAMESPACE "data_storage"
 sensor_data_t sensor = {};
 // Function to store data
@@ -129,7 +136,7 @@ namespace sensor {
 
     // Define the data storage structure (in-memory storage for now)
     // std::vector<SensorData> historical_data; // A vector to store historical sensor data
-    size_t max_storage_size = 120; // Max size of historical data to store (can be adjusted)
+    
 
     void load_sensor_data_from_nvs(sensor_data_t *data) {
         nvs_handle_t my_handle;
@@ -154,162 +161,76 @@ namespace sensor {
         nvs_close(my_handle);
     }
     // Function to retrieve historical data (for example, the last n records)
-    // std::vector<SensorData> get_historical_data(size_t num_records) {
-    //     std::vector<SensorData> result;
-    //     size_t start_index = historical_data.size() > num_records ? historical_data.size() - num_records : 0;
+    void get_historical_data(std::vector<sensor_data_t>& snsr_data){
+        sensor_data_t * buffer = {};
+        for (int i = nvs_index; i > 0; i--)
+        {
+            load_sensor_data_from_nvs(buffer);
+            snsr_data.push_back(*buffer);
+        }
+    }
+     void send_data_chunk_via_bdx(chip::EndpointId endpoint, const std::vector<sensor_data_t>& data_chunk) {
+        
+        chip::ByteSpan data_span(reinterpret_cast<const uint8_t*>(data_chunk.data()), data_chunk.size() * sizeof(sensor_data_t));
 
-    //     // Copy the requested historical records
-    //     for (size_t i = start_index; i < historical_data.size(); ++i) {
-    //         result.push_back(historical_data[i]);
-    //     }
+        
+        chip::bdx::TransferInit transferInitMessage;
+        transferInitMessage.StartOffset = 0;
+        transferInitMessage.MaxLength = max_storage_size*sizeof(sensor_data_t);
+        transferInitMessage.MaxBlockSize = 256;
+        char FileDes[16]    = { "BDX_DATA.txt" };
+        transferInitMessage.FileDesignator = reinterpret_cast<uint8_t *>(FileDes); 
 
-    //     return result;
-    // }
+        // Encoding::LittleEndian::BufferWriter writer;
+        // transferInitMessage.WriteToBuffer(writer);
+    
+        chip::Encoding::LittleEndian::PacketBufferWriter bbuf(chip::System::PacketBufferHandle::New(max_storage_size));
+        transferInitMessage.WriteToBuffer(bbuf);
+        chip::bdx::DataBlock dataBlock;
+        dataBlock.BlockCounter = 1;
+        dataBlock.Data = (uint8_t *)(&(data_chunk[1].temperature));
+        // dataBlock.Data = static_cast<int*>(data_chunk.humidity);
+        // dataBlock.Data = static_cast<int*>(data_chunk.batttery_volt);
+        dataBlock.DataLength = sizeof(data_chunk);
+
+        dataBlock.WriteToBuffer(bbuf);
+
+        // CounterMessage counterMsg;
+        // counterMsg.BlockCounter = 1;
+        // counterMsg.WriteToBuffer(writer);
+        
+    }
+
+    // Function to initiate a BDX bulk data transfer
+    void start_bdx_transfer(chip::EndpointId endpoint) {
+        std::vector<sensor_data_t> buffer;
+
+        // Send data in chunks
+        get_historical_data(buffer);
+        send_data_chunk_via_bdx(endpoint_id, buffer);  // Send the chunk via BDX
+    }
 
 } // namespace sensor
 } // namespace cluster
 } // namespace esp_matter
 
 
-// Define a global instance of Delegate for data storage operations
-// chip::app::Clusters::CustomDataStorage::CustomData custom_data_delegate;
-// Define a struct to hold the measurement data (humidity, temperature, and battery SOC)
-// struct MeasurementData {
-//     float humidity;
-//     float temperature;
-//     float battery_soc;
-// };
-// namespace chip {
-// namespace app {
-// namespace Clusters {
-// namespace CustomDataStorage {
 
-// // Custom Cluster definition
-// class Delegate {
-// public:
-//     virtual ~Delegate() = default;
-
-//     virtual esp_err_t store_data(const MeasurementData& data)  = 0;  // Store Data
-//     virtual esp_err_t retrieve_data(MeasurementData& data) = 0;  // Retrieve Data
-// };
-// class custom_Data: public Delegate{
-//     private:
-//         int data_index = 0;
-//     public:
-//       // Function to store data in NVS
-//     esp_err_t store_data(const MeasurementData& data) {
-//         nvs_handle_t nvs_handle;
-//         esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
-//         if (err != ESP_OK) {
-//             ESP_LOGE("store_data", "Failed to open NVS: %s", esp_err_to_name(err));
-//             return err;
-//         }
-
-//         // Create a composite key using the index
-//         std::string key = "measurement_" + std::to_string(data_index);
-
-//         // Store the data (entire struct)
-//         err = nvs_set_blob(nvs_handle, key.c_str(), &data, sizeof(MeasurementData));
-//         if (err != ESP_OK) {
-//             ESP_LOGE("store_data", "Failed to store data: %s", esp_err_to_name(err));
-//             nvs_close(nvs_handle);
-//             return err;
-//         }
-
-//         // Commit the data to NVS
-//         err = nvs_commit(nvs_handle);
-//         if (err != ESP_OK) {
-//             ESP_LOGE("store_data", "Failed to commit data to NVS: %s", esp_err_to_name(err));
-//             nvs_close(nvs_handle);
-//             return err;
-//         }
-
-//         nvs_close(nvs_handle);
-//         ESP_LOGI("store_data", "Data stored successfully at index %d", data_index);
-//         return ESP_OK;
-//     }
-
-//     // Function to retrieve data from NVS
-//     esp_err_t retrieve_data(MeasurementData& data) {
-//         nvs_handle_t nvs_handle;
-//         esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
-//         if (err != ESP_OK) {
-//             ESP_LOGE("retrieve_data", "Failed to open NVS: %s", esp_err_to_name(err));
-//             return err;
-//         }
-
-//         // Create a composite key using the index
-//         std::string key = "measurement_" + std::to_string(data_index);
-
-//         // Retrieve the data (entire struct)
-//         size_t required_size = sizeof(MeasurementData);
-//         err = nvs_get_blob(nvs_handle, key.c_str(), &data, &required_size);
-//         if (err != ESP_OK) {
-//             ESP_LOGE("retrieve_data", "Failed to retrieve data: %s", esp_err_to_name(err));
-//             nvs_close(nvs_handle);
-//             return err;
-//         }
-
-//         nvs_close(nvs_handle);
-//         ESP_LOGI("retrieve_data", "Data retrieved successfully for index %d", data_index);
-//         return ESP_OK;
-//     }
-// };
-
-
-
-// // Cluster implementation
-// class Instance : public AttributeAccessInterface {
-
-// public:
-//     static constexpr ClusterId Id = CLUSTER_ID;
-//     Instance(EndpointId aEndpointId, Delegate & aDelegate) :
-//     AttributeAccessInterface(chip::Optional<EndpointId>(aEndpointId), Id), mDelegate(aDelegate) {}
-
-//     // Instance(EndpointId aEndpointId, Delegate & aDelegate) :
-//     //     AttributeAccessInterface(aEndpointId, Id), mDelegate(aDelegate) {}
-
-//     CHIP_ERROR Init() { return CHIP_NO_ERROR; }
-//     CHIP_ERROR Read(const ConcreteReadAttributePath & aPath, AttributeValueEncoder & aEncoder) override {
-//         // Implement read logic based on the attribute path
-//         return CHIP_NO_ERROR;
-//     }
-
-// private:
-//     Delegate & mDelegate;
-// };
-
-// } // namespace CustomDataStorage
-// } // namespace Clusters
-// } // namespace app
-// } // namespace chip
-
-
-// } // namespace Clusters
-// } // namespace app
-// } // namespace chip
-static float read_battery_level()
+static void battery_notification(uint16_t endpoint_id, float b_level, void *user_data)
 {
-    float battery_level_raw = 0;
-    // Use your max17048 sensor driver to get the battery level
-    // Assuming the battery level is returned as a percentage
-    int err = max17048_get_soc(&battery_level_raw);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to read battery level from MAX17048");
-        return 0.0f;
-    }
-    return battery_level_raw; // Assuming this is a percentage
+    // schedule the attribute update so that we can report it from matter thread
+    chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id, b_level]() {
+        attribute_t * attribute = attribute::get(endpoint_id,
+                                                 ElectricalPowerMeasurement::Id,
+                                                 ElectricalPowerMeasurement::Attributes::Voltage::Id);
+
+        esp_matter_attr_val_t val = esp_matter_invalid(NULL);
+        attribute::get_val(attribute, &val);
+        val.val.i16 = static_cast<int16_t>(b_level);
+
+        attribute::update(endpoint_id, ElectricalPowerMeasurement::Id, ElectricalPowerMeasurement::Attributes::Voltage::Id, &val);
+    });
 }
-
-// static void update_battery_level(uint16_t endpoint_id)
-// {
-//     // Read the battery level from the MAX17048 sensor
-//     sensor.battery_volt = read_battery_level();
-    
-//     // Set the battery level attribute in the Matter BatteryLevel cluster
-//     // BatteryLevel::SetBatteryLevel(endpoint_id, battery_level);
-
-// }
 // Application cluster specification, 7.18.2.11. Temperature
 // represents a temperature on the Celsius scale with a resolution of 0.01°C.
 // temp = (temperature in °C) x 100
@@ -486,10 +407,10 @@ static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16
 void main_task(void *pvParameter) {
 
     while (1) {
-        sht30_get_read_temp_and_humidity(sensor.temperature, sensor.humidity);
-        sensor.battery_volt = read_battery_level();
+        read_sensor_data(sensor.temperature, sensor.humidity,sensor.battery_volt);
         store_data(&sensor);
         vTaskDelay(60000 / portTICK_PERIOD_MS); // Delay for 1 minute
+        esp_matter::cluster::sensor::start_bdx_transfer(esp_matter::cluster::sensor::endpoint_id);
     }
 }
 extern "C" void app_main()
@@ -524,11 +445,11 @@ extern "C" void app_main()
     ABORT_APP_ON_FAILURE(humidity_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create humidity_sensor endpoint"));
 
 
-    solar_power::config_t blevel_config;
-    blevel_ep = solar_power::create(node, &blevel_config, ENDPOINT_FLAG_NONE, NULL);
+    electrical_sensor::config_t blevel_config;
+    blevel_ep = electrical_sensor::create(node, &blevel_config, ENDPOINT_FLAG_NONE, NULL);
     ABORT_APP_ON_FAILURE(blevel_ep != nullptr, ESP_LOGE(TAG, "Failed to create blevel endpoint"));
     
-    static sht30_sensor_config_t sht30_config = {
+    static sensor_config_t sht30_config = {
         .temperature = {
             .cb = temp_sensor_notification,
             .endpoint_id = endpoint::get_id(temp_sensor_ep),
@@ -537,14 +458,15 @@ extern "C" void app_main()
             .cb = humidity_sensor_notification,
             .endpoint_id = endpoint::get_id(humidity_sensor_ep),
         },
+        .bat_level = {
+            .cb = battery_notification,
+            .endpoint_id = endpoint::get_id(blevel_ep),
+        },
     };
-    err = sht30_sensor_init(&sht30_config);
+    err = sensor_init(&sht30_config);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to initialize temperature sensor driver"));
 
-    max17048_config_t max_config = {
-        .i2c_num = I2C_NUM_0,   // Use I2C port 0
-        .i2c_addr = MAX17048_DEFAULT_ADDR,  // Default I2C address
-    };
+    
 
     button_gpio_init(&button_config);
     gpio_num_t btn = GPIO_NUM_2;

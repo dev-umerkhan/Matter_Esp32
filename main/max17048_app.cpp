@@ -84,7 +84,7 @@ esp_err_t max17048_init(const max17048_config_t* config)
  * @param soc Pointer to the variable to store the state of charge (0-100%).
  * @return ESP_OK on success, an error code otherwise.
  */
-esp_err_t max17048_get_soc(float* soc)
+esp_err_t max17048_get_soc(int* soc)
 {
     if (soc == NULL) {
         return ESP_ERR_INVALID_ARG;
